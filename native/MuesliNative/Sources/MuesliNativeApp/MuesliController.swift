@@ -6226,8 +6226,50 @@ final class MuesliController: NSObject {
             try? FileManager.default.removeItem(at: retainedRecordingURL)
         }
         if let systemRecordingURL = result.systemRecordingURL {
-            try? FileManager.default.removeItem(at: systemRecordingURL)
+            if config.retainSystemAudioRecordings {
+                do {
+                    let outputURL = try Self.retainSystemAudioRecording(
+                        from: systemRecordingURL,
+                        meetingTitle: result.title,
+                        startedAt: result.startTime,
+                        supportDirectory: configStore.supportDirectory()
+                    )
+                    fputs("[meeting] retained system audio: \(outputURL.path)\n", stderr)
+                } catch {
+                    fputs("[meeting] failed to retain system audio: \(error)\n", stderr)
+                    try? FileManager.default.removeItem(at: systemRecordingURL)
+                }
+            } else {
+                try? FileManager.default.removeItem(at: systemRecordingURL)
+            }
         }
+    }
+
+    /// Moves the temporary isolated system-audio recording into the support
+    /// directory instead of deleting it. Diagnostic aid for evaluating
+    /// diarization backends against the exact audio the diarizer consumed;
+    /// gated by the `retain_system_audio_recordings` config key.
+    nonisolated static func retainSystemAudioRecording(
+        from tempURL: URL,
+        meetingTitle: String,
+        startedAt: Date,
+        supportDirectory: URL
+    ) throws -> URL {
+        let directory = supportDirectory
+            .appendingPathComponent("meeting-recordings", isDirectory: true)
+            .appendingPathComponent("system-audio", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        let fileExtension = tempURL.pathExtension.isEmpty ? "wav" : tempURL.pathExtension
+        let baseName = MeetingRecordingWriter.fileNamePrefix(for: startedAt, title: meetingTitle)
+        var destinationURL = directory.appendingPathComponent("\(baseName)-system.\(fileExtension)")
+        var counter = 2
+        while FileManager.default.fileExists(atPath: destinationURL.path) {
+            destinationURL = directory.appendingPathComponent("\(baseName)-system-\(counter).\(fileExtension)")
+            counter += 1
+        }
+        try FileManager.default.moveItem(at: tempURL, to: destinationURL)
+        return destinationURL
     }
 
     private func cleanupTemporaryDirectory(named directoryName: String, logDescription: String) {

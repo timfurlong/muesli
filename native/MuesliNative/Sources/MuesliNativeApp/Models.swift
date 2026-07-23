@@ -1020,6 +1020,7 @@ struct AppConfig: Codable {
     var mutedMeetingDetectionAppBundleIDs: [String] = []
     var meetingRecordingSavePolicy: MeetingRecordingSavePolicy = .never
     var meetingRecordingFileFormat: String = MeetingRecordingFileFormat.m4a.rawValue
+    var retainSystemAudioRecordings: Bool = false
     var waveformCacheOrphanCleanupMigrationApplied: Bool = false
     var darkMode: Bool = true
     var enableDoubleTapDictation: Bool = true
@@ -1140,6 +1141,7 @@ struct AppConfig: Codable {
         case mutedMeetingDetectionAppBundleIDs = "muted_meeting_detection_app_bundle_ids"
         case meetingRecordingSavePolicy = "meeting_recording_save_policy"
         case meetingRecordingFileFormat = "meeting_recording_file_format"
+        case retainSystemAudioRecordings = "retain_system_audio_recordings"
         case waveformCacheOrphanCleanupMigrationApplied = "waveform_cache_orphan_cleanup_migration_applied"
         case darkMode = "dark_mode"
         case enableDoubleTapDictation = "enable_double_tap_dictation"
@@ -1279,6 +1281,7 @@ struct AppConfig: Codable {
             ?? defaults.meetingRecordingFileFormat
         meetingRecordingFileFormat = MeetingRecordingFileFormat(rawValue: decodedMeetingRecordingFileFormat)?.rawValue
             ?? defaults.meetingRecordingFileFormat
+        retainSystemAudioRecordings = (try? c.decode(Bool.self, forKey: .retainSystemAudioRecordings)) ?? defaults.retainSystemAudioRecordings
         waveformCacheOrphanCleanupMigrationApplied =
             (try? c.decode(Bool.self, forKey: .waveformCacheOrphanCleanupMigrationApplied))
             ?? defaults.waveformCacheOrphanCleanupMigrationApplied

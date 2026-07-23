@@ -178,7 +178,7 @@ final class MeetingRecordingWriter {
         state.bytesWritten += pcmData.count
     }
 
-    private static func fileNamePrefix(for date: Date, title: String) -> String {
+    static func fileNamePrefix(for date: Date, title: String) -> String {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = .current
