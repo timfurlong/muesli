@@ -2521,6 +2521,22 @@ public final class DictationStore {
         }
     }
 
+    public func updateMeetingSystemAudioPath(id: Int64, path: String?) throws {
+        let db = try openDatabase()
+        defer { sqlite3_close(db) }
+        let sql = "UPDATE meetings SET system_audio_path = ? WHERE id = ?"
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
+            throw lastError(db)
+        }
+        defer { sqlite3_finalize(statement) }
+        bindOptionalText(path, at: 1, statement: statement)
+        sqlite3_bind_int64(statement, 2, id)
+        guard sqlite3_step(statement) == SQLITE_DONE else {
+            throw lastError(db)
+        }
+    }
+
     @discardableResult
     public func createFolder(name: String, parentID: Int64? = nil) throws -> Int64 {
         let db = try openDatabase()

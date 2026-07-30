@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import MuesliCore
 @testable import MuesliNativeApp
 
 @Suite("System audio retention")
@@ -76,6 +77,37 @@ struct SystemAudioRetentionTests {
         )
 
         #expect(output.pathExtension == "wav")
+    }
+
+    @Test func recordsRetainedPathOnMeetingRow() throws {
+        let root = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = DictationStore(databaseURL: root.appendingPathComponent("test.db"))
+        try store.migrateIfNeeded()
+        let startedAt = Date(timeIntervalSince1970: 1_776_000_000)
+        let meetingID = try store.insertMeeting(
+            title: "Weekly Standup",
+            calendarEventID: nil,
+            startTime: startedAt,
+            endTime: startedAt.addingTimeInterval(60),
+            rawTranscript: "Some words",
+            formattedNotes: "## Notes",
+            micAudioPath: nil,
+            systemAudioPath: nil
+        )
+        let tempRecording = try makeTempRecording(in: root)
+
+        let output = try MuesliController.retainSystemAudioRecording(
+            from: tempRecording,
+            meetingTitle: "Weekly Standup",
+            startedAt: startedAt,
+            supportDirectory: root,
+            meetingID: meetingID,
+            store: store
+        )
+
+        #expect(FileManager.default.fileExists(atPath: output.path))
+        #expect(try store.meeting(id: meetingID)?.systemAudioPath == output.path)
     }
 
     @Test func retainFlagDecodesFromSnakeCaseConfigKey() throws {

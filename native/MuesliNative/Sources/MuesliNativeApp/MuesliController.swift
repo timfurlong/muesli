@@ -6025,7 +6025,7 @@ final class MuesliController: NSObject {
                 self.syncAppState()
                 self.clearLiveMeetingTranscript(ownerID: liveMeetingID)
                 if let meetingResult {
-                    self.cleanupTemporaryMeetingAudioFiles(for: meetingResult)
+                    self.cleanupTemporaryMeetingAudioFiles(for: meetingResult, meetingID: completedMeetingID)
                 }
                 TelemetryDeck.signal("meeting.completed")
 
@@ -6305,7 +6305,7 @@ final class MuesliController: NSObject {
         }
     }
 
-    private func cleanupTemporaryMeetingAudioFiles(for result: MeetingSessionResult) {
+    private func cleanupTemporaryMeetingAudioFiles(for result: MeetingSessionResult, meetingID: Int64?) {
         if let retainedRecordingURL = result.retainedRecordingURL {
             try? FileManager.default.removeItem(at: retainedRecordingURL)
         }
@@ -6316,7 +6316,9 @@ final class MuesliController: NSObject {
                         from: systemRecordingURL,
                         meetingTitle: result.title,
                         startedAt: result.startTime,
-                        supportDirectory: configStore.supportDirectory()
+                        supportDirectory: configStore.supportDirectory(),
+                        meetingID: meetingID,
+                        store: dictationStore
                     )
                     fputs("[meeting] retained system audio: \(outputURL.path)\n", stderr)
                 } catch {
@@ -6330,14 +6332,17 @@ final class MuesliController: NSObject {
     }
 
     /// Moves the temporary isolated system-audio recording into the support
-    /// directory instead of deleting it. Diagnostic aid for evaluating
-    /// diarization backends against the exact audio the diarizer consumed;
-    /// gated by the `retain_system_audio_recordings` config key.
+    /// directory instead of deleting it, and records the destination on the
+    /// meeting row when a meeting ID and store are provided. Diagnostic aid for
+    /// evaluating diarization backends against the exact audio the diarizer
+    /// consumed; gated by the `retain_system_audio_recordings` config key.
     nonisolated static func retainSystemAudioRecording(
         from tempURL: URL,
         meetingTitle: String,
         startedAt: Date,
-        supportDirectory: URL
+        supportDirectory: URL,
+        meetingID: Int64? = nil,
+        store: DictationStore? = nil
     ) throws -> URL {
         let directory = supportDirectory
             .appendingPathComponent("meeting-recordings", isDirectory: true)
@@ -6353,6 +6358,15 @@ final class MuesliController: NSObject {
             counter += 1
         }
         try FileManager.default.moveItem(at: tempURL, to: destinationURL)
+        if let meetingID, let store {
+            do {
+                try store.updateMeetingSystemAudioPath(id: meetingID, path: destinationURL.path)
+            } catch {
+                // The file was retained successfully; a failed row update should
+                // not surface as a retention failure (the caller would delete).
+                fputs("[meeting] failed to record retained system audio path: \(error)\n", stderr)
+            }
+        }
         return destinationURL
     }
 
