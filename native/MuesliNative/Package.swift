@@ -10,6 +10,7 @@ let package = Package(
         .library(name: "MuesliCore", targets: ["MuesliCore"]),
         .executable(name: "MuesliNativeApp", targets: ["MuesliNativeApp"]),
         .executable(name: "muesli-cli", targets: ["MuesliCLI"]),
+        .executable(name: "muesli-diarbench", targets: ["MuesliDiarBench"]),
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-argument-parser", from: "1.3.0"),
@@ -64,6 +65,14 @@ let package = Package(
                 .product(name: "FluidAudio", package: "FluidAudio"),
             ],
             path: "Sources/MuesliCLI"
+        ),
+        .executableTarget(
+            name: "MuesliDiarBench",
+            dependencies: [
+                .product(name: "ArgumentParser", package: "swift-argument-parser"),
+                .product(name: "FluidAudio", package: "FluidAudio"),
+            ],
+            path: "Sources/MuesliDiarBench"
         ),
         .target(
             name: "AudioGraphExceptionBridge",
