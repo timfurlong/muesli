@@ -237,6 +237,48 @@ struct MeetingNeuralAecTests {
         #expect(failure.missingCandidateCount == estimator.candidateDelaysMs.count)
     }
 
+    @Test("unloaded AEC reports disengaged status and counts passthrough samples")
+    func unloadedAecCountsPassthroughSamples() {
+        let aec = MeetingNeuralAec(selection: .localVQEStrict)
+        aec.resetForStreaming()
+
+        let output = aec.processStreamingMic([Float](repeating: 0.3, count: 800))
+
+        #expect(output.count == 800)
+        let status = aec.engagementStatus
+        #expect(status.engaged == false)
+        #expect(status.processorName == nil)
+        #expect(status.passthroughSamples == 800)
+        #expect(aec.diagnosticsSnapshot.passthroughSamples == 800)
+    }
+
+    @Test("loaded AEC reports engaged status with zero passthrough")
+    func loadedAecReportsEngagedStatus() {
+        let processor = PassthroughAecProcessor(frameSize: 256)
+        let aec = MeetingNeuralAec(preloadedProcessor: processor)
+        aec.resetForStreaming()
+        aec.feedSystemSamples([Float](repeating: 0.1, count: 512))
+        _ = aec.processStreamingMic([Float](repeating: 0.3, count: 512))
+
+        let status = aec.engagementStatus
+        #expect(status.engaged == true)
+        #expect(status.processorName == processor.name)
+        #expect(status.passthroughSamples == 0)
+        #expect(aec.diagnosticsSnapshot.processorName == processor.name)
+    }
+
+    @Test("per-frame processor errors count toward passthrough")
+    func processorErrorsCountTowardPassthrough() {
+        let processor = FailingAecProcessor(frameSize: 256)
+        let aec = MeetingNeuralAec(preloadedProcessor: processor)
+        aec.resetForStreaming()
+        aec.feedSystemSamples([Float](repeating: 0.1, count: 512))
+        let output = aec.processStreamingMic([Float](repeating: 0.3, count: 512))
+
+        #expect(output.count == 512)
+        #expect(aec.engagementStatus.passthroughSamples == 512)
+    }
+
     private func makeTemporaryAppBundle() throws -> TemporaryAppBundle {
         let appURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("meeting-aec-\(UUID().uuidString)", isDirectory: true)
@@ -289,6 +331,24 @@ struct MeetingNeuralAecTests {
                 MeetingAecDelayCandidateScore(delayMs: delayMs, score: 0.8, comparedFrames: 100)
             ]
         )
+    }
+}
+
+private final class FailingAecProcessor: MeetingAecProcessor {
+    struct ProcessingError: Error {}
+
+    let name = "test-failing"
+    let frameSize: Int
+    let sampleRate = 16_000
+
+    init(frameSize: Int) {
+        self.frameSize = frameSize
+    }
+
+    func reset() {}
+
+    func processFrame(mic: [Float], reference: [Float]) throws -> [Float] {
+        throw ProcessingError()
     }
 }
 

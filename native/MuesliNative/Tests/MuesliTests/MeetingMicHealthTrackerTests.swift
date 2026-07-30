@@ -90,4 +90,55 @@ struct MeetingMicHealthTrackerTests {
         #expect(recovered.warningMessage == nil)
         #expect(recovered.firstNonZeroMicAt != nil)
     }
+
+    @Test("no AEC status reported produces no AEC warning")
+    func noAecStatusProducesNoWarning() {
+        let tracker = MeetingMicHealthTracker()
+        let snapshot = tracker.noteRawMicSamples(Array(repeating: 400, count: 1_000))
+        #expect(snapshot.aecStatus == nil)
+        #expect(snapshot.warningMessage == nil)
+    }
+
+    @Test("disengaged AEC raises warning even while mic is healthy")
+    func disengagedAecRaisesWarning() {
+        let tracker = MeetingMicHealthTracker()
+        _ = tracker.noteRawMicSamples(Array(repeating: 400, count: 1_000))
+
+        let snapshot = tracker.noteAecStatus(MeetingAecEngagementStatus(
+            engaged: false, processorName: nil, passthroughSamples: 0, sampleRate: 16_000
+        ))
+        #expect(snapshot.state == .healthy)
+        #expect(snapshot.warningMessage?.contains("Echo cancellation is not active") == true)
+    }
+
+    @Test("engaged AEC with sustained passthrough raises warning")
+    func engagedAecWithPassthroughRaisesWarning() {
+        let tracker = MeetingMicHealthTracker()
+
+        var snapshot = tracker.noteAecStatus(MeetingAecEngagementStatus(
+            engaged: true, processorName: "dtln", passthroughSamples: 16_000, sampleRate: 16_000
+        ))
+        #expect(snapshot.warningMessage == nil)
+
+        snapshot = tracker.noteAecStatus(MeetingAecEngagementStatus(
+            engaged: true, processorName: "dtln", passthroughSamples: 48_000, sampleRate: 16_000
+        ))
+        #expect(snapshot.warningMessage?.contains("skipping some microphone audio") == true)
+    }
+
+    @Test("mic-signal state warnings take precedence over AEC warnings")
+    func micStateWarningsTakePrecedenceOverAec() {
+        let tracker = MeetingMicHealthTracker()
+        _ = tracker.noteAecStatus(MeetingAecEngagementStatus(
+            engaged: false, processorName: nil, passthroughSamples: 0, sampleRate: 16_000
+        ))
+
+        _ = tracker.noteRawMicSamples(Array(repeating: 0, count: 16_000))
+        _ = tracker.noteSystemSamples(Array(repeating: 6_000, count: 16_000))
+        _ = tracker.noteSystemSamples(Array(repeating: 6_000, count: 16_000))
+        let snapshot = tracker.noteSystemSamples(Array(repeating: 6_000, count: 16_000))
+
+        #expect(snapshot.state == .micAllZeroWhileSystemActive)
+        #expect(snapshot.warningMessage == snapshot.state.userMessage)
+    }
 }

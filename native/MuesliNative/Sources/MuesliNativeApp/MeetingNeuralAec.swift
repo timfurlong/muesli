@@ -93,6 +93,18 @@ enum MeetingAecProcessorSelection {
     }
 }
 
+/// Snapshot of whether echo cancellation is actually processing mic audio.
+struct MeetingAecEngagementStatus: Codable, Equatable {
+    let engaged: Bool
+    let processorName: String?
+    let passthroughSamples: Int
+    let sampleRate: Int
+
+    var passthroughSeconds: Double {
+        Double(passthroughSamples) / Double(max(sampleRate, 1))
+    }
+}
+
 final class MeetingNeuralAec {
     private var processor: MeetingAecProcessor?
     private var isLoaded = false
@@ -120,6 +132,7 @@ final class MeetingNeuralAec {
     private var fullReferenceFrames = 0
     private var partialReferenceFrames = 0
     private var missingReferenceFrames = 0
+    private var passthroughSamples = 0
     private let delayEstimator = MeetingAecDelayEstimator()
     private var currentDelaySamples = 0
     private var nextDelayEstimateSample = 8_000
@@ -183,6 +196,7 @@ final class MeetingNeuralAec {
         systemSamplesReceived = 0
         micSamplesReceived = 0
         processedFrames = 0
+        passthroughSamples = 0
         fullReferenceFrames = 0
         partialReferenceFrames = 0
         missingReferenceFrames = 0
@@ -217,6 +231,7 @@ final class MeetingNeuralAec {
 
         guard let processor else {
             fputs("[meeting-aec] processor not loaded, passing through raw mic audio\n", stderr)
+            passthroughSamples += micSamples.count
             trimHistoryBuffersIfNeeded()
             return micSamples
         }
@@ -259,6 +274,7 @@ final class MeetingNeuralAec {
                 } catch {
                     lastProcessingError = "\(error)"
                     fputs("[meeting-aec] \(processor.name) processing failed: \(error); passing through raw frame\n", stderr)
+                    passthroughSamples += micFrame.count
                     cleaned.append(contentsOf: micFrame)
                 }
             }
@@ -280,6 +296,7 @@ final class MeetingNeuralAec {
                 } catch {
                     lastProcessingError = "\(error)"
                     fputs("[meeting-aec] \(processor.name) flush processing failed: \(error); passing through raw frame\n", stderr)
+                    passthroughSamples += actualCount
                     cleanedFrame = micFrame
                 }
             }
@@ -509,6 +526,17 @@ final class MeetingNeuralAec {
     /// Whether the model is loaded and ready.
     var isReady: Bool { isLoaded && processor != nil }
 
+    /// Engagement summary for meeting health surfacing. Accessed on the same
+    /// queue as the streaming entry points.
+    var engagementStatus: MeetingAecEngagementStatus {
+        MeetingAecEngagementStatus(
+            engaged: isReady,
+            processorName: processor?.name,
+            passthroughSamples: passthroughSamples,
+            sampleRate: sampleRate
+        )
+    }
+
     var diagnosticsSnapshot: MeetingAecDiagnosticsSnapshot {
         MeetingAecDiagnosticsSnapshot(
             ready: isReady,
@@ -520,6 +548,8 @@ final class MeetingNeuralAec {
             micSamplesReceived: micSamplesReceived,
             bufferedSystemSamples: systemHistory.count,
             bufferedMicSamples: pendingMicSamples.count,
+            passthroughSamples: passthroughSamples,
+            processorName: processor?.name,
             currentDelayMs: Int(round(Double(currentDelaySamples) * 1000.0 / Double(sampleRate))),
             delayHistory: delayHistory,
             delaySkipHistory: delaySkipHistory

@@ -264,6 +264,15 @@ final class MeetingSession {
         // AEC must be loaded before audio pipeline starts (streaming mode)
         await neuralAec.preload()
 
+        // Surface engagement immediately: a failed AEC load must not degrade
+        // to silent passthrough with only a discarded stderr line.
+        let aecStatus = neuralAec.engagementStatus
+        let healthAfterAecLoad = micHealthTracker.noteAecStatus(aecStatus)
+        if !aecStatus.engaged {
+            fputs("[meeting-aec] no processor engaged at meeting start; mic audio will not be echo-cancelled\n", stderr)
+            onMicHealthChanged?(healthAfterAecLoad)
+        }
+
         chunkRotationQueue.sync {
             startTime = now
             chunkTimingTracker.start()
@@ -1009,14 +1018,17 @@ final class MeetingSession {
         chunkRotationQueue.async { [weak self] in
             guard let self, self.isRecording, !self.isPaused else { return }
 
-            let healthSnapshot = self.micHealthTracker.noteRawMicSamples(rawSamples)
-            self.onMicHealthChanged?(healthSnapshot)
+            _ = self.micHealthTracker.noteRawMicSamples(rawSamples)
             self.retainedRecordingWriter?.appendMic(rawSamples)
 
             let floatSamples = rawSamples.map { Float($0) / 32767.0 }
 
             // AEC: clean mic using position-aligned system reference
             let cleanedFloat = self.neuralAec.processStreamingMic(floatSamples)
+            // Refresh AEC engagement after processing so runtime passthrough
+            // (load failure or per-frame errors) reaches the health warning.
+            let healthSnapshot = self.micHealthTracker.noteAecStatus(self.neuralAec.engagementStatus)
+            self.onMicHealthChanged?(healthSnapshot)
             self.appendCleanedMicSamplesOnQueue(cleanedFloat)
 
             // Meeting mic chunks must be driven by the cleaned mic stream. Raw

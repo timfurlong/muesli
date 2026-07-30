@@ -36,9 +36,26 @@ struct MeetingMicHealthSnapshot: Codable {
     let lastNonZeroMicAt: Date?
     let lastSystemAudioAt: Date?
     let transitions: [MeetingMicHealthTransition]
+    /// Last reported echo-cancellation status; nil until the session reports one.
+    let aecStatus: MeetingAecEngagementStatus?
+
+    /// Echo cancellation counts as degraded when it never engaged or when a
+    /// noticeable stretch of mic audio bypassed it (per-frame processor errors).
+    private static let passthroughWarningSeconds = 3.0
+
+    var aecWarningMessage: String? {
+        guard let aecStatus else { return nil }
+        if !aecStatus.engaged {
+            return "Echo cancellation is not active. Speaker audio may bleed into your side of the transcript."
+        }
+        if aecStatus.passthroughSeconds >= Self.passthroughWarningSeconds {
+            return "Echo cancellation is skipping some microphone audio. Speaker audio may bleed into your side of the transcript."
+        }
+        return nil
+    }
 
     var warningMessage: String? {
-        state.userMessage
+        state.userMessage ?? aecWarningMessage
     }
 }
 
@@ -57,6 +74,7 @@ final class MeetingMicHealthTracker {
         var activeSystemSamplesWhileMicMissing = 0
         var activeSystemSamplesWhileMicZero = 0
         var transitions: [MeetingMicHealthTransition] = []
+        var aecStatus: MeetingAecEngagementStatus?
     }
 
     private static let sampleRate = 16_000
@@ -129,6 +147,13 @@ final class MeetingMicHealthTracker {
         }
     }
 
+    func noteAecStatus(_ status: MeetingAecEngagementStatus) -> MeetingMicHealthSnapshot {
+        lock.withLock { state in
+            state.aecStatus = status
+            return snapshotLocked(state)
+        }
+    }
+
     func snapshot() -> MeetingMicHealthSnapshot {
         lock.withLock { snapshotLocked($0) }
     }
@@ -158,7 +183,8 @@ final class MeetingMicHealthTracker {
             lastRawMicCallbackAt: state.lastRawMicCallbackAt,
             lastNonZeroMicAt: state.lastNonZeroMicAt,
             lastSystemAudioAt: state.lastSystemAudioAt,
-            transitions: state.transitions
+            transitions: state.transitions,
+            aecStatus: state.aecStatus
         )
     }
 

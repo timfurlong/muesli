@@ -79,6 +79,8 @@ struct MeetingAecDiagnosticsSnapshot: Codable {
     let micSamplesReceived: Int
     let bufferedSystemSamples: Int
     let bufferedMicSamples: Int
+    let passthroughSamples: Int
+    let processorName: String?
     let currentDelayMs: Int
     let delayHistory: [MeetingAecDelayObservation]
     let delaySkipHistory: [MeetingAecDelaySkip]
