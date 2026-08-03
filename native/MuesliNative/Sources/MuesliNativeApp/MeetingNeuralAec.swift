@@ -413,7 +413,11 @@ final class MeetingNeuralAec {
 
     private func trimHistoryBuffersIfNeeded() {
         let maxCandidateDelaySamples = delayEstimator.maxCandidateDelaySamples
+        // Retention covers the estimator window plus candidate reach on BOTH sides:
+        // positive candidates extend mic reads past the window tail, negative ones
+        // extend them before the window head.
         let retentionSamples = delayEstimator.windowSamples + maxCandidateDelaySamples
+            + delayEstimator.maxNegativeCandidateDelaySamples
         let latestComparableSystemSample = min(systemAbsoluteEndSample, micSamplesReceived - maxCandidateDelaySamples)
         let oldestNeededForEstimator = latestComparableSystemSample > 0
             ? max(0, latestComparableSystemSample - delayEstimator.windowSamples)
@@ -581,7 +585,13 @@ struct MeetingAecDelayEstimator {
         let systemPeak: Double?
     }
 
+    // Negative candidates model the reference arriving LATE relative to the mic
+    // timeline (CoreAudio tap delivery latency: a stable -139ms was measured on a
+    // real meeting). They are finer-grained than the positive side because tap
+    // latency clusters in -60..-240ms and DTLN degrades past ~20ms misalignment.
     static let defaultCandidateDelaysMs = [
+        -320, -280, -240, -220, -200, -180, -160, -140,
+        -120, -100, -80, -60, -40,
         0, 40, 80, 120, 160, 200, 240, 280,
         320, 360, 400, 440, 480, 520, 560, 600, 640,
         720, 800,
@@ -599,6 +609,13 @@ struct MeetingAecDelayEstimator {
 
     var maxCandidateDelaySamples: Int {
         candidateDelaysMs.map(delaySamples(for:)).max() ?? 0
+    }
+
+    /// Magnitude of the most negative candidate (0 when the grid has none).
+    /// Negative candidates slice mic windows EARLIER than the window head, so mic
+    /// retention and the window clamp must reserve this much extra history.
+    var maxNegativeCandidateDelaySamples: Int {
+        max(0, -(candidateDelaysMs.map(delaySamples(for:)).min() ?? 0))
     }
 
     func estimate(
@@ -628,7 +645,21 @@ struct MeetingAecDelayEstimator {
         comparableEndSample: Int
     ) -> Attempt {
         let windowEnd = comparableEndSample
-        let windowStart = max(0, windowEnd - windowSamples)
+        // Clamp the window head to the retained system history. Trimming is anchored
+        // to the system stream's own progress while the window is anchored to mic
+        // progress, so whenever system delivery runs even slightly ahead of mic the
+        // nominal head falls below the trim floor. The surviving overlap is still
+        // orders of magnitude above the 0.5s minimum; failing instead starves the
+        // estimator for the whole meeting and leaves the AEC reference misaligned.
+        // The mic-side clamp keeps negative candidates sliceable: they read mic
+        // history from before the window head, so the head must stay at least
+        // maxNegativeCandidateDelaySamples above the mic trim floor.
+        let windowStart = max(
+            0,
+            windowEnd - windowSamples,
+            systemHistoryStartSample,
+            micHistoryStartSample + maxNegativeCandidateDelaySamples
+        )
         let systemWindow = samples(
             from: systemHistory,
             historyStartSample: systemHistoryStartSample,

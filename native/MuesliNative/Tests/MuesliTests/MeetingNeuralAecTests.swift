@@ -76,6 +76,111 @@ struct MeetingNeuralAecTests {
         #expect(result.score > 0.9)
     }
 
+    @Test("delay estimator finds mic echo that precedes the system stream (late tap delivery)")
+    func delayEstimatorFindsNegativeDelay() throws {
+        // Regression: the CoreAudio tap delivers system audio ~139ms late relative to
+        // the mic timeline (2026-08-03 meeting, stable -139ms lag in every 20s bin),
+        // so the reference the AEC needs sits LATER in the system stream. A grid
+        // with only non-negative delays locks 0ms and cancels nothing (0.7 dB live).
+        let estimator = MeetingAecDelayEstimator()
+        let tapLatency = 2_240 // 140ms at 16kHz
+        let sampleCount = estimator.windowSamples + estimator.maxCandidateDelaySamples + 8_000
+        var system = [Float](repeating: 0, count: sampleCount)
+        var mic = [Float](repeating: 0, count: sampleCount)
+
+        for start in stride(from: 4_000, to: estimator.windowSamples - 8_000, by: 12_000) {
+            for offset in 0..<3_200 {
+                let value = Float(sin(Double(offset) * 0.04)) * 0.25
+                mic[start + offset] += value * 0.55
+                system[start + tapLatency + offset] = value
+            }
+        }
+
+        let result = try #require(estimator.estimate(
+            micHistory: mic,
+            micHistoryStartSample: 0,
+            systemHistory: system,
+            systemHistoryStartSample: 0,
+            comparableEndSample: estimator.windowSamples
+        ))
+
+        #expect(result.delayMs == -140)
+        #expect(result.score > 0.9)
+    }
+
+    @Test("delay estimator survives trimmed system history that starts inside the window")
+    func delayEstimatorSurvivesTrimmedSystemHistory() throws {
+        // Regression: system delivery running ~0.17s ahead of mic pushes the trim
+        // floor past the nominal window head. The estimator must use the surviving
+        // overlap instead of failing with insufficientSystemHistory (2026-08-03
+        // meeting: 22 minutes, zero successful estimates, AEC stuck at delay 0).
+        let estimator = MeetingAecDelayEstimator()
+        let delaySamples = 3_840 // 240ms at 16kHz
+        let historyStart = 2_752 // observed production skew
+        let sampleCount = estimator.windowSamples + estimator.maxCandidateDelaySamples + 4_000
+        var system = [Float](repeating: 0, count: sampleCount)
+        var mic = [Float](repeating: 0, count: sampleCount)
+
+        for start in stride(from: 4_000, to: estimator.windowSamples - 8_000, by: 12_000) {
+            for offset in 0..<3_200 {
+                let value = Float(sin(Double(offset) * 0.04)) * 0.25
+                system[start + offset] = value
+                mic[start + delaySamples + offset] += value * 0.55
+            }
+        }
+
+        let result = try #require(estimator.estimate(
+            micHistory: Array(mic.dropFirst(historyStart)),
+            micHistoryStartSample: historyStart,
+            systemHistory: Array(system.dropFirst(historyStart)),
+            systemHistoryStartSample: historyStart,
+            comparableEndSample: estimator.windowSamples
+        ))
+
+        #expect(result.delayMs == 240)
+        #expect(result.score > 0.9)
+    }
+
+    @Test("streaming AEC keeps estimating delay when system delivery runs ahead of mic")
+    func streamingAecEstimatesDelayUnderStreamSkew() {
+        let processor = PassthroughAecProcessor(frameSize: 256)
+        let aec = MeetingNeuralAec(preloadedProcessor: processor)
+        aec.resetForStreaming()
+
+        // One shared timeline; mic hears the system signal 120ms later
+        // (on the estimator's 40ms candidate grid).
+        let delaySamples = 1_920
+        let skew = 2_752
+        let total = 400_000 // 25s, well past the ~8.8s retention floor
+        var source = [Float](repeating: 0, count: total + skew)
+        for start in stride(from: 2_000, to: total - 16_000, by: 12_000) {
+            for offset in 0..<3_200 {
+                source[start + offset] = Float(sin(Double(offset) * 0.04)) * 0.25
+            }
+        }
+        var mic = [Float](repeating: 0, count: total)
+        for i in delaySamples..<total {
+            mic[i] = source[i - delaySamples] * 0.55
+        }
+
+        // System delivery stays `skew` samples ahead of mic delivery throughout.
+        aec.feedSystemSamples(Array(source[0..<skew]))
+        var position = 0
+        let chunk = 1_600
+        while position < total {
+            let end = min(position + chunk, total)
+            aec.feedSystemSamples(Array(source[(position + skew)..<(end + skew)]))
+            _ = aec.processStreamingMic(Array(mic[position..<end]))
+            position = end
+        }
+
+        let diag = aec.diagnosticsSnapshot
+        let starvedSkips = diag.delaySkipHistory.filter { $0.reason == "insufficientSystemHistory" }
+        #expect(starvedSkips.isEmpty)
+        #expect(diag.delayHistory.count >= 5)
+        #expect(diag.currentDelayMs == 120)
+    }
+
     @Test("delay estimator median smooths recent estimates")
     func delayEstimatorMedianSmoothsRecentEstimates() {
         #expect(MeetingAecDelayEstimator.recencyWeightedMedianDelay(from: [
@@ -97,6 +202,7 @@ struct MeetingNeuralAecTests {
         aec.resetForStreaming()
         let estimator = MeetingAecDelayEstimator()
         let retentionSamples = estimator.windowSamples + estimator.maxCandidateDelaySamples
+            + estimator.maxNegativeCandidateDelaySamples
         let chunkSize = 1_600
         let chunk = [Float](repeating: 0.1, count: chunkSize)
 
@@ -112,6 +218,7 @@ struct MeetingNeuralAecTests {
         let aec = MeetingNeuralAec()
         let estimator = MeetingAecDelayEstimator()
         let retentionSamples = estimator.windowSamples + estimator.maxCandidateDelaySamples
+            + estimator.maxNegativeCandidateDelaySamples
         let chunkSize = 1_600
         let chunk = [Float](repeating: 0.1, count: chunkSize)
 
@@ -230,11 +337,13 @@ struct MeetingNeuralAecTests {
         )
 
         guard case let .failure(failure) = attempt else {
-            Issue.record("Expected missing mic candidate windows failure")
+            Issue.record("Expected an estimation failure when mic history lies beyond the window")
             return
         }
-        #expect(failure.reason == "missingMicCandidateWindows")
-        #expect(failure.missingCandidateCount == estimator.candidateDelaysMs.count)
+        // Mic history that starts beyond the comparison window clamps the window
+        // head past its end, which surfaces as an empty system window rather than
+        // per-candidate missing-mic accounting.
+        #expect(failure.reason == "insufficientSystemHistory")
     }
 
     @Test("unloaded AEC reports disengaged status and counts passthrough samples")
